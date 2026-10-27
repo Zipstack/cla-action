@@ -92,7 +92,7 @@ When Claude Code is itself the commit author (for example in a Claude Code cloud
 - **The PR comment is found by its marker alone**, whoever wrote it, and an unlinked commit's author name is shown as the committer wrote it.
 - **The signatures file must stay under 1 MB** (a few thousand signatures): above that the contents API stops returning the file and every run fails.
 - **`exempt-org-members` is off only for the exact value `false`.** Any other value, including `False` or `no`, leaves org members exempt.
-- **A PR opened by an account in `agent-logins` fails the check** unless that account itself signs or is an org member, because it counts as the PR author. The action does not stop an agent account from signing. Open the PR from a person's account, or from a GitHub App (`[bot]` accounts are exempt).
+- **A PR opened by an account in `agent-logins` fails the check** unless that account itself signs or is exempt (see step 2 of *How it works*), because it counts as the PR author. The action does not stop an agent account from signing. Open the PR from a person's account, or from a GitHub App (`[bot]` accounts are exempt).
 - **An edited or hidden comment never signs**, even when its author edited it into the phrase or a maintainer only hid it; the person posts the phrase again as a new comment. The workflow log says which comment was ignored. This is checked when the signature is recorded, normally seconds after the comment is posted: editing or hiding a comment afterwards does not remove a signature already recorded, and nothing in the action does.
 - **The status description counts unlinked commits** as committers, one per commit.
 - **The file's `version` field is not checked** when it is read.
