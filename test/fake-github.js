@@ -26,7 +26,9 @@ function fakeGitHub({ pr, commits = [], comments = [], members = [], signatures,
   async function request(method, path, body) {
     let match
     if (method === 'GET' && (match = path.match(/^\/repos\/[^/]+\/[^/]+\/pulls\/(\d+)$/))) {
-      return state.pr
+      // GitHub reports the PR's full commit count, which the commits list
+      // can fall short of.
+      return { commits: state.commits.length, ...state.pr }
     }
     if (method === 'GET' && path.startsWith('/repos/Zipstack/cla-signatures/contents/')) {
       if (!state.file) throw new GitHubError(404, method, path, 'Not Found')
@@ -57,8 +59,11 @@ function fakeGitHub({ pr, commits = [], comments = [], members = [], signatures,
       throw new GitHubError(404, method, path, 'Not Found')
     }
     if (method === 'POST' && path.match(/\/issues\/\d+\/comments$/)) {
+      const now = new Date().toISOString()
       const comment = {
         id: nextId++,
+        created_at: now,
+        updated_at: now,
         user: { id: 41898282, login: 'github-actions[bot]', type: 'Bot' },
         body: body.body,
         html_url: `https://github.com/comment/${nextId}`,

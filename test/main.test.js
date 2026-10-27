@@ -55,9 +55,21 @@ function commentEvent(user, body) {
 
 // Posts a comment on the PR and runs the action for it, as GitHub would.
 let nextCommentId = 1
-function comment(gh, user, body) {
+function postComment(gh, user, body, { editedAt } = {}) {
   const id = nextCommentId++
-  gh.state.comments.push({ id, user, body, html_url: `https://github.com/Zipstack/unstract/pull/7#issuecomment-${id}` })
+  const createdAt = new Date(Date.UTC(2026, 9, 1, 0, id)).toISOString()
+  gh.state.comments.push({
+    id,
+    user,
+    body,
+    created_at: createdAt,
+    updated_at: editedAt || createdAt,
+    html_url: `https://github.com/Zipstack/unstract/pull/7#issuecomment-${id}`,
+  })
+  return gh.state.comments.at(-1)
+}
+function comment(gh, user, body) {
+  postComment(gh, user, body)
   return run(gh, 'issue_comment', commentEvent(user, body))
 }
 
@@ -160,12 +172,13 @@ test('a sign comment whose own run was cancelled is recorded by the next run', a
   // The concurrency group cancels a pending run when another is queued, so the
   // sign comment's run may never execute. Any later run must pick it up.
   const gh = fakeGitHub({ pr: openPr(), commits: [commitBy(alice)] })
-  gh.state.comments.push({ id: 500, user: alice, body: PHRASE, html_url: 'https://github.com/c/500' })
+  const signed = postComment(gh, alice, PHRASE)
   const result = await comment(gh, bob, 'LGTM')
 
   assert.equal(result.passed, true)
   assert.deepEqual(gh.state.file.data.signatures.map((s) => s.id), [alice.id])
-  assert.equal(gh.state.file.data.signatures[0].comment_url, 'https://github.com/c/500')
+  assert.equal(gh.state.file.data.signatures[0].comment_url, signed.html_url)
+  assert.equal(gh.state.file.data.signatures[0].signed_at, signed.created_at, 'signed when the comment was posted')
   assert.equal(gh.state.statuses.at(-1).state, 'success')
 })
 
@@ -207,9 +220,27 @@ test('comments on plain issues are ignored', () => {
   assert.equal(resolveTrigger('issue_comment', event), null)
 })
 
-test('edited comments do not sign', () => {
+test('edited comments do not sign', async () => {
   const event = { ...commentEvent(alice, PHRASE), action: 'edited' }
   assert.equal(resolveTrigger('issue_comment', event), null)
+
+  // Nor does a later run pick up a comment that was edited into the phrase.
+  const gh = fakeGitHub({ pr: openPr(), commits: [commitBy(alice)] })
+  postComment(gh, alice, PHRASE, { editedAt: '2026-10-20T00:00:00.000Z' })
+  const result = await comment(gh, bob, 'LGTM')
+  assert.equal(result.passed, false)
+  assert.equal(gh.state.file, null, 'nothing written')
+})
+
+test('a PR whose commit count matches the listed commits is not treated as truncated', async () => {
+  const gh = fakeGitHub({
+    pr: { ...openPr(), commits: 2 },
+    commits: [commitBy(alice, '1'.repeat(40)), commitBy(alice, '2'.repeat(40))],
+    signatures: { version: 1, signatures: [{ id: alice.id, login: 'alice' }] },
+  })
+  const result = await run(gh, 'pull_request_target', prEvent)
+  assert.equal(result.truncated, false)
+  assert.equal(result.passed, true)
 })
 
 test('a concurrent write is retried against the latest file, keeping the other signatures', async () => {

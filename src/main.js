@@ -70,14 +70,17 @@ async function handle({ eventName, event, repository, inputs, gh, signaturesGh, 
 
   // Signatures come from every sign comment on the PR, not only the one that
   // triggered this run (see resolveTrigger). Only a commit author or the PR
-  // author can sign; the earliest sign comment per person is recorded.
+  // author can sign; the earliest sign comment per person is recorded. An
+  // edited comment never signs: people with write access can edit anyone's
+  // comment, so its text may not be what its author wrote.
   const comments = await gh.paginate(`/repos/${repository}/issues/${pr.number}/comments`)
   let { data } = await loadSignatures(signaturesGh, location)
   const required = new Set(users.map((user) => user.id))
   const handled = new Set()
   for (const comment of comments) {
     const signer = comment.user
-    if (!signer || handled.has(signer.id) || !isSignComment(comment.body, inputs.signPhrase)) continue
+    if (!signer || handled.has(signer.id) || comment.updated_at !== comment.created_at) continue
+    if (!isSignComment(comment.body, inputs.signPhrase)) continue
     handled.add(signer.id)
     if (signedIds(data).has(signer.id)) continue
     if (!required.has(signer.id)) {
@@ -87,7 +90,7 @@ async function handle({ eventName, event, repository, inputs, gh, signaturesGh, 
     data = await addSignature(signaturesGh, location, {
       id: signer.id,
       login: signer.login,
-      signed_at: new Date().toISOString(),
+      signed_at: comment.created_at,
       cla_document: inputs.claDocumentUrl,
       repository,
       pull_request: pr.number,
