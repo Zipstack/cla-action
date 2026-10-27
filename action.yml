@@ -1,0 +1,49 @@
+name: Zipstack CLA check
+description: Requires every commit author on a pull request to have signed the Contributor License Agreement, and records signatures made by PR comment.
+author: Zipstack
+
+inputs:
+  cla-document-url:
+    description: Link to the CLA text that contributors agree to.
+    required: true
+  signatures-repository:
+    description: Repository (owner/name) holding the signatures file, normally private.
+    required: true
+  signatures-token:
+    description: Token with contents read/write on the signatures repository, and organization members read when exempt-org-members is on. Use a GitHub App token.
+    required: true
+  signatures-path:
+    description: Path of the signatures file in the signatures repository.
+    default: signatures.json
+  signatures-branch:
+    description: Branch of the signatures repository to read and write.
+    default: main
+  sign-phrase:
+    description: Exact comment a contributor posts to sign.
+    default: I have read the CLA Document and I hereby sign the CLA
+  allowlist:
+    description: Comma-separated logins that never need to sign. `*` is a wildcard.
+    default: '*[bot]'
+  agent-logins:
+    description: Comma-separated logins of coding agents whose commits count as the PR author's, so the PR author signs for them.
+    default: claude
+  exempt-org-members:
+    description: Skip members of the organization (they are covered by their employment terms).
+    default: 'true'
+  organization:
+    description: Organization whose members are exempt. Defaults to the repository owner.
+    default: ''
+  status-context:
+    description: Name of the commit status this action sets. Make this the required check.
+    default: license/cla
+  github-token:
+    description: Token for the calling repository. Needs pull-requests write and statuses write.
+    default: ${{ github.token }}
+
+runs:
+  using: node24
+  main: src/index.js
+
+branding:
+  icon: edit-3
+  color: blue
