@@ -246,6 +246,13 @@ test('edited comments do not sign', async () => {
   assert.deepEqual(gh.state.file.data.signatures.map((s) => s.id), [alice.id])
   assert.equal(gh.state.file.data.signatures[0].signed_at, new Date(fresh.created_at).toISOString())
 
+  // Someone who may not sign is told so, not told to post again.
+  const outsider = postComment(gh, staff, PHRASE, { editedAt: '2026-10-20T00:00:00Z' })
+  const outsiderLogs = []
+  await run(gh, 'issue_comment', commentEvent(bob, 'hm'), (line) => outsiderLogs.push(line))
+  assert.ok(outsiderLogs.some((line) => line.includes('@staff is not a commit author')))
+  assert.ok(!outsiderLogs.some((line) => line.includes(outsider.html_url)))
+
   // Once signed, the old edited comment no longer tells them to post again.
   const later = []
   await run(gh, 'issue_comment', commentEvent(bob, 'ok'), (line) => later.push(line))

@@ -92,7 +92,7 @@ async function handle({ eventName, event, repository, inputs, gh, signaturesGh, 
     }
     if (comment.updated_at !== comment.created_at) {
       // Not marked handled, so a later unedited sign comment still counts.
-      log(`Ignoring edited or hidden sign comment ${comment.html_url} from @${signer.login}; post the phrase again as a new comment.`)
+      log(`Ignoring edited or hidden sign comment ${comment.html_url} from @${signer.login}; if a signature is still needed, post the phrase again as a new comment.`)
       continue
     }
     handled.add(signer.id)
