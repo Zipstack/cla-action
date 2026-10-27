@@ -81,17 +81,21 @@ async function handle({ eventName, event, repository, inputs, gh, signaturesGh, 
   for (const comment of comments) {
     const signer = comment.user
     if (!signer || handled.has(signer.id) || !isSignComment(comment.body, inputs.signPhrase)) continue
+    if (signedIds(data).has(signer.id)) {
+      handled.add(signer.id)
+      continue
+    }
+    if (!required.has(signer.id)) {
+      handled.add(signer.id)
+      log(`@${signer.login} is not a commit author or the author of PR #${pr.number}; not recording a signature.`)
+      continue
+    }
     if (comment.updated_at !== comment.created_at) {
       // Not marked handled, so a later unedited sign comment still counts.
       log(`Ignoring edited or hidden sign comment ${comment.html_url} from @${signer.login}; post the phrase again as a new comment.`)
       continue
     }
     handled.add(signer.id)
-    if (signedIds(data).has(signer.id)) continue
-    if (!required.has(signer.id)) {
-      log(`@${signer.login} is not a commit author or the author of PR #${pr.number}; not recording a signature.`)
-      continue
-    }
     data = await addSignature(signaturesGh, location, {
       id: signer.id,
       login: signer.login,

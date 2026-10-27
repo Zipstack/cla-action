@@ -32,7 +32,7 @@ function openPr(author = alice) {
 
 const claudeAgent = { id: 81847, login: 'claude', type: 'User' }
 
-function run(gh, eventName, event) {
+function run(gh, eventName, event, log = () => {}) {
   return handle({
     eventName,
     event,
@@ -40,7 +40,7 @@ function run(gh, eventName, event) {
     inputs,
     gh,
     signaturesGh: gh,
-    log: () => {},
+    log,
   })
 }
 
@@ -231,10 +231,13 @@ test('edited comments do not sign', async () => {
 
   // Nor does a later run pick up a comment that was edited into the phrase.
   const gh = fakeGitHub({ pr: openPr(), commits: [commitBy(alice)] })
-  postComment(gh, alice, PHRASE, { editedAt: '2026-10-20T00:00:00.000Z' })
-  const result = await comment(gh, bob, 'LGTM')
+  const edited = postComment(gh, alice, PHRASE, { editedAt: '2026-10-20T00:00:00Z' })
+  postComment(gh, bob, 'LGTM')
+  const logs = []
+  const result = await run(gh, 'issue_comment', commentEvent(bob, 'LGTM'), (line) => logs.push(line))
   assert.equal(result.passed, false)
   assert.equal(gh.state.file, null, 'nothing written')
+  assert.ok(logs.some((line) => line.includes(edited.html_url) && line.includes('@alice')), 'the log names the ignored comment')
 
   // Posting the phrase again as a new comment signs.
   const fresh = postComment(gh, alice, PHRASE)
@@ -242,6 +245,11 @@ test('edited comments do not sign', async () => {
   assert.equal(retry.passed, true)
   assert.deepEqual(gh.state.file.data.signatures.map((s) => s.id), [alice.id])
   assert.equal(gh.state.file.data.signatures[0].signed_at, new Date(fresh.created_at).toISOString())
+
+  // Once signed, the old edited comment no longer tells them to post again.
+  const later = []
+  await run(gh, 'issue_comment', commentEvent(bob, 'ok'), (line) => later.push(line))
+  assert.ok(!later.some((line) => line.includes(edited.html_url)), 'no repost advice after signing')
 })
 
 test('a PR whose commit count matches the listed commits is not treated as truncated', async () => {
