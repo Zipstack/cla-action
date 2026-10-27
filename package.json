@@ -1,0 +1,12 @@
+{
+  "name": "cla-action",
+  "private": true,
+  "description": "GitHub Action that enforces the Zipstack Contributor License Agreement on pull requests",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}
