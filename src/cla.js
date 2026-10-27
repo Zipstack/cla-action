@@ -17,10 +17,6 @@ function isSignComment(body, phrase) {
   return normalize(body) === normalize(phrase)
 }
 
-function isRecheckComment(body) {
-  return normalize(body) === 'recheck'
-}
-
 function parseList(value) {
   return String(value || '')
     .split(/[,\n]/)
@@ -56,9 +52,9 @@ function collectCommitAuthors(commits) {
   return { users: [...users.values()], unlinked }
 }
 
-// Commits made by a coding agent (e.g. Claude Code commits as the `claude`
-// account) are the PR author's contribution, so the PR author is the one who
-// must sign for them. Allowlisting the agent instead would let anyone skip the
+// Commits made by a coding agent (e.g. a Claude Code cloud session commits as
+// the `claude` account) are the PR author's contribution, so the PR author is
+// the one who must sign for them. Allowlisting the agent instead would let anyone skip the
 // CLA by having the agent make every commit.
 function attributeToPrAuthor(users, agentLogins, prAuthor) {
   const agents = new Set(agentLogins.map((login) => login.toLowerCase()))
@@ -70,6 +66,15 @@ function attributeToPrAuthor(users, agentLogins, prAuthor) {
     result.set(owner.id, owner)
   }
   return [...result.values()]
+}
+
+// The PR author must sign (or be exempt) even with no commit of their own.
+// Commit authors are matched by the commit's email, which the committer sets
+// freely, so without this a contributor could attribute every commit to an
+// exempt or already-signed account and never sign.
+function addPrAuthor(users, prAuthor) {
+  if (users.some((user) => user.id === prAuthor.id)) return users
+  return [...users, { id: prAuthor.id, login: prAuthor.login, type: prAuthor.type }]
 }
 
 async function classifyAuthors(users, { signedIds, allowlist, isOrgMember }) {
@@ -88,8 +93,8 @@ async function classifyAuthors(users, { signedIds, allowlist, isOrgMember }) {
   return result
 }
 
-function renderComment({ unsigned, unlinked, claUrl, phrase }) {
-  if (unsigned.length === 0 && unlinked.length === 0) {
+function renderComment({ unsigned, unlinked, truncated = false, claUrl, phrase }) {
+  if (unsigned.length === 0 && unlinked.length === 0 && !truncated) {
     return `${COMMENT_MARKER}\n✅ All committers have signed the [CLA](${claUrl}). Thank you!`
   }
 
@@ -98,6 +103,12 @@ function renderComment({ unsigned, unlinked, claUrl, phrase }) {
     `Thank you for your contribution! Before we can merge it, every committer needs to sign our [Contributor License Agreement](${claUrl}).`,
     '',
   ]
+  if (truncated) {
+    lines.push(
+      'This pull request has more commits than GitHub lists (250), so not every committer can be checked. Split it into smaller pull requests.',
+      '',
+    )
+  }
   if (unsigned.length > 0) {
     lines.push(
       'To sign, read the CLA and then post a comment on this pull request with exactly this text:',
@@ -126,10 +137,10 @@ function renderComment({ unsigned, unlinked, claUrl, phrase }) {
 
 module.exports = {
   COMMENT_MARKER,
+  addPrAuthor,
   attributeToPrAuthor,
   classifyAuthors,
   collectCommitAuthors,
-  isRecheckComment,
   isSignComment,
   matchesAllowlist,
   parseList,

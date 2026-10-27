@@ -2,35 +2,36 @@
 
 const {
   COMMENT_MARKER,
+  addPrAuthor,
   attributeToPrAuthor,
   classifyAuthors,
   collectCommitAuthors,
-  isRecheckComment,
   isSignComment,
   renderComment,
 } = require('./cla')
 const { addSignature, loadSignatures, signedIds } = require('./store')
 
-// Works out which PR the event is about and whether the commenter is signing.
-// Returns null when the event needs no action.
-function resolveTrigger(eventName, event, phrase) {
+// Works out which PR the event is about. Returns null when the event needs no
+// action.
+//
+// Every PR comment runs the whole check, not just sign and `recheck` comments.
+// The workflow's concurrency group keeps only one pending run per PR and
+// cancels the one already pending, so a sign comment's run can be replaced by
+// a later comment's run. Each run therefore does all the work, including
+// recording sign comments it finds on the PR, so the run that replaced a
+// cancelled one does what the cancelled one would have done.
+function resolveTrigger(eventName, event) {
   if (eventName === 'pull_request_target' || eventName === 'pull_request') {
-    return { prNumber: event.pull_request.number, signer: null }
+    return { prNumber: event.pull_request.number }
   }
   if (eventName === 'issue_comment') {
     if (event.action !== 'created' || !event.issue.pull_request) return null
-    const body = event.comment.body
-    if (isSignComment(body, phrase)) {
-      return { prNumber: event.issue.number, signer: event.comment.user, comment: event.comment }
-    }
-    if (isRecheckComment(body)) return { prNumber: event.issue.number, signer: null }
-    return null
+    return { prNumber: event.issue.number }
   }
   throw new Error(`Unsupported event "${eventName}". Trigger on pull_request_target and issue_comment.`)
 }
 
-async function upsertComment(gh, repository, prNumber, body, { createIfMissing }) {
-  const comments = await gh.paginate(`/repos/${repository}/issues/${prNumber}/comments`)
+async function upsertComment(gh, repository, prNumber, comments, body, { createIfMissing }) {
   const existing = comments.find((comment) => comment.body && comment.body.includes(COMMENT_MARKER))
   if (existing) {
     if (existing.body === body) return existing
@@ -41,7 +42,7 @@ async function upsertComment(gh, repository, prNumber, body, { createIfMissing }
 }
 
 async function handle({ eventName, event, repository, inputs, gh, signaturesGh, log }) {
-  const trigger = resolveTrigger(eventName, event, inputs.signPhrase)
+  const trigger = resolveTrigger(eventName, event)
   if (!trigger) {
     log('Nothing to do for this event.')
     return null
@@ -54,8 +55,12 @@ async function handle({ eventName, event, repository, inputs, gh, signaturesGh, 
   }
 
   const commits = await gh.paginate(`/repos/${repository}/pulls/${pr.number}/commits`)
+  // The PR commits endpoint returns at most 250 commits. Authors beyond that
+  // are never seen, so a PR longer than that fails rather than passing on a
+  // partial list.
+  const truncated = commits.length < pr.commits
   const authors = collectCommitAuthors(commits)
-  const users = attributeToPrAuthor(authors.users, inputs.agentLogins, pr.user)
+  const users = addPrAuthor(attributeToPrAuthor(authors.users, inputs.agentLogins, pr.user), pr.user)
   const unlinked = authors.unlinked
   const location = {
     repository: inputs.signaturesRepository,
@@ -63,23 +68,32 @@ async function handle({ eventName, event, repository, inputs, gh, signaturesGh, 
     branch: inputs.signaturesBranch,
   }
 
+  // Signatures come from every sign comment on the PR, not only the one that
+  // triggered this run (see resolveTrigger). Only a commit author or the PR
+  // author can sign; the earliest sign comment per person is recorded.
+  const comments = await gh.paginate(`/repos/${repository}/issues/${pr.number}/comments`)
   let { data } = await loadSignatures(signaturesGh, location)
-  const signer = trigger.signer
-  if (signer && !signedIds(data).has(signer.id)) {
-    if (users.some((user) => user.id === signer.id)) {
-      data = await addSignature(signaturesGh, location, {
-        id: signer.id,
-        login: signer.login,
-        signed_at: new Date().toISOString(),
-        cla_document: inputs.claDocumentUrl,
-        repository,
-        pull_request: pr.number,
-        comment_url: trigger.comment.html_url,
-      })
-      log(`Recorded signature for @${signer.login}.`)
-    } else {
-      log(`@${signer.login} is not a commit author on PR #${pr.number}; not recording a signature.`)
+  const required = new Set(users.map((user) => user.id))
+  const handled = new Set()
+  for (const comment of comments) {
+    const signer = comment.user
+    if (!signer || handled.has(signer.id) || !isSignComment(comment.body, inputs.signPhrase)) continue
+    handled.add(signer.id)
+    if (signedIds(data).has(signer.id)) continue
+    if (!required.has(signer.id)) {
+      log(`@${signer.login} is not a commit author or the author of PR #${pr.number}; not recording a signature.`)
+      continue
     }
+    data = await addSignature(signaturesGh, location, {
+      id: signer.id,
+      login: signer.login,
+      signed_at: new Date().toISOString(),
+      cla_document: inputs.claDocumentUrl,
+      repository,
+      pull_request: pr.number,
+      comment_url: comment.html_url,
+    })
+    log(`Recorded signature for @${signer.login}.`)
   }
 
   const org = inputs.organization
@@ -100,7 +114,8 @@ async function handle({ eventName, event, repository, inputs, gh, signaturesGh, 
     allowlist: inputs.allowlist,
     isOrgMember,
   })
-  const passed = result.unsigned.length === 0 && unlinked.length === 0
+  const passed = result.unsigned.length === 0 && unlinked.length === 0 && !truncated
+  if (truncated) log(`PR #${pr.number} has ${pr.commits} commits; only the first ${commits.length} can be listed.`)
   log(
     `signed: ${result.signed.map((u) => u.login).join(', ') || '-'}; ` +
       `exempt: ${result.exempt.map((u) => u.login).join(', ') || '-'}; ` +
@@ -112,7 +127,8 @@ async function handle({ eventName, event, repository, inputs, gh, signaturesGh, 
     gh,
     repository,
     pr.number,
-    renderComment({ ...result, unlinked, claUrl: inputs.claDocumentUrl, phrase: inputs.signPhrase }),
+    comments,
+    renderComment({ ...result, unlinked, truncated, claUrl: inputs.claDocumentUrl, phrase: inputs.signPhrase }),
     { createIfMissing: !passed },
   )
 
@@ -122,11 +138,13 @@ async function handle({ eventName, event, repository, inputs, gh, signaturesGh, 
     context: inputs.statusContext,
     description: passed
       ? 'All committers have signed the CLA.'
-      : `${pending} committer${pending === 1 ? '' : 's'} still need${pending === 1 ? 's' : ''} to sign the CLA.`,
+      : truncated
+        ? `PR has ${pr.commits} commits; only ${commits.length} can be checked. Split it into smaller PRs.`
+        : `${pending} committer${pending === 1 ? '' : 's'} still need${pending === 1 ? 's' : ''} to sign the CLA.`,
     target_url: comment ? comment.html_url : inputs.claDocumentUrl,
   })
 
-  return { passed, ...result, unlinked }
+  return { passed, ...result, unlinked, truncated }
 }
 
 module.exports = { handle, resolveTrigger }

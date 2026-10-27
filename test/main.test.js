@@ -4,6 +4,7 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const { handle, resolveTrigger } = require('../src/main')
 const { addSignature } = require('../src/store')
+const { COMMENT_MARKER } = require('../src/cla')
 const { commitBy, fakeGitHub } = require('./fake-github')
 
 const PHRASE = 'I have read the CLA Document and I hereby sign the CLA'
@@ -52,6 +53,14 @@ function commentEvent(user, body) {
   }
 }
 
+// Posts a comment on the PR and runs the action for it, as GitHub would.
+let nextCommentId = 1
+function comment(gh, user, body) {
+  const id = nextCommentId++
+  gh.state.comments.push({ id, user, body, html_url: `https://github.com/Zipstack/unstract/pull/7#issuecomment-${id}` })
+  return run(gh, 'issue_comment', commentEvent(user, body))
+}
+
 test('unsigned author: failure status and a comment asking them to sign', async () => {
   const gh = fakeGitHub({ pr: openPr(), commits: [commitBy(alice)] })
   const result = await run(gh, 'pull_request_target', prEvent)
@@ -67,19 +76,20 @@ test('unsigned author: failure status and a comment asking them to sign', async 
 test('signing by comment records the signature and flips the status to success', async () => {
   const gh = fakeGitHub({ pr: openPr(), commits: [commitBy(alice)] })
   await run(gh, 'pull_request_target', prEvent)
-  const result = await run(gh, 'issue_comment', commentEvent(alice, PHRASE))
+  const result = await comment(gh, alice, PHRASE)
 
   assert.equal(result.passed, true)
   assert.deepEqual(gh.state.file.data.signatures.map((s) => s.id), [alice.id])
   assert.equal(gh.state.file.data.signatures[0].pull_request, 7)
   assert.equal(gh.state.statuses.at(-1).state, 'success')
-  assert.equal(gh.state.comments.length, 1, 'the existing comment is updated, not duplicated')
-  assert.match(gh.state.comments[0].body, /All committers have signed/)
+  const botComments = gh.state.comments.filter((c) => c.body.includes(COMMENT_MARKER))
+  assert.equal(botComments.length, 1, 'the existing comment is updated, not duplicated')
+  assert.match(botComments[0].body, /All committers have signed/)
 })
 
 test('a commenter who is not a commit author cannot sign on someone else\'s PR', async () => {
   const gh = fakeGitHub({ pr: openPr(), commits: [commitBy(alice)] })
-  const result = await run(gh, 'issue_comment', commentEvent(bob, PHRASE))
+  const result = await comment(gh, bob, PHRASE)
 
   assert.equal(result.passed, false)
   assert.equal(gh.state.file, null, 'nothing written')
@@ -88,8 +98,8 @@ test('a commenter who is not a commit author cannot sign on someone else\'s PR',
 
 test('signing twice writes only once', async () => {
   const gh = fakeGitHub({ pr: openPr(), commits: [commitBy(alice)] })
-  await run(gh, 'issue_comment', commentEvent(alice, PHRASE))
-  await run(gh, 'issue_comment', commentEvent(alice, PHRASE))
+  await comment(gh, alice, PHRASE)
+  await comment(gh, alice, PHRASE)
   assert.equal(gh.state.writes, 1)
 })
 
@@ -108,7 +118,12 @@ test('already-signed, org-member and bot authors pass without a comment', async 
 })
 
 test('a commit with no linked GitHub account keeps the check failing', async () => {
-  const gh = fakeGitHub({ pr: openPr(), commits: [commitBy(null)], signatures: { version: 1, signatures: [] } })
+  const gh = fakeGitHub({
+    pr: openPr(staff),
+    commits: [commitBy(null)],
+    members: ['staff'],
+    signatures: { version: 1, signatures: [] },
+  })
   const result = await run(gh, 'pull_request_target', prEvent)
   assert.equal(result.passed, false)
   assert.match(gh.state.statuses[0].description, /1 committer still needs/)
@@ -122,7 +137,7 @@ test('agent-authored commits require the PR author to sign, not the agent', asyn
   assert.deepEqual(result.unsigned.map((u) => u.login), ['bob'])
   assert.doesNotMatch(gh.state.comments[0].body, /@claude/)
 
-  await run(gh, 'issue_comment', commentEvent(bob, PHRASE))
+  await comment(gh, bob, PHRASE)
   assert.deepEqual(gh.state.file.data.signatures.map((s) => s.login), ['bob'])
   assert.equal(gh.state.statuses.at(-1).state, 'success')
 })
@@ -133,29 +148,87 @@ test('agent-authored commits by an org member pass through the member exemption'
   assert.equal(result.passed, true)
 })
 
-test('closed PRs and unrelated comments are ignored', async () => {
+test('closed PRs are ignored', async () => {
   const gh = fakeGitHub({ pr: { ...openPr(), state: 'closed' }, commits: [commitBy(alice)] })
   assert.equal(await run(gh, 'pull_request_target', prEvent), null)
-  assert.equal(await run(gh, 'issue_comment', commentEvent(alice, 'LGTM')), null)
+  assert.equal(await comment(gh, alice, PHRASE), null)
   assert.equal(gh.state.statuses.length, 0)
+  assert.equal(gh.state.file, null)
+})
+
+test('a sign comment whose own run was cancelled is recorded by the next run', async () => {
+  // The concurrency group cancels a pending run when another is queued, so the
+  // sign comment's run may never execute. Any later run must pick it up.
+  const gh = fakeGitHub({ pr: openPr(), commits: [commitBy(alice)] })
+  gh.state.comments.push({ id: 500, user: alice, body: PHRASE, html_url: 'https://github.com/c/500' })
+  const result = await comment(gh, bob, 'LGTM')
+
+  assert.equal(result.passed, true)
+  assert.deepEqual(gh.state.file.data.signatures.map((s) => s.id), [alice.id])
+  assert.equal(gh.state.file.data.signatures[0].comment_url, 'https://github.com/c/500')
+  assert.equal(gh.state.statuses.at(-1).state, 'success')
+})
+
+test('the PR author must sign even when every commit is attributed to an exempt account', async () => {
+  // Commit authors are matched by email, which the committer chooses.
+  const botAccount = { id: 41898282, login: 'github-actions[bot]', type: 'Bot' }
+  const gh = fakeGitHub({
+    pr: openPr(bob),
+    commits: [commitBy(botAccount), commitBy(staff)],
+    members: ['staff'],
+    signatures: { version: 1, signatures: [] },
+  })
+  const result = await run(gh, 'pull_request_target', prEvent)
+
+  assert.equal(result.passed, false)
+  assert.deepEqual(result.unsigned.map((u) => u.login), ['bob'])
+
+  await comment(gh, bob, PHRASE)
+  assert.deepEqual(gh.state.file.data.signatures.map((s) => s.login), ['bob'])
+  assert.equal(gh.state.statuses.at(-1).state, 'success')
+})
+
+test('a PR with more commits than GitHub lists fails instead of passing on a partial list', async () => {
+  const gh = fakeGitHub({
+    pr: { ...openPr(), commits: 300 },
+    commits: [commitBy(alice)],
+    signatures: { version: 1, signatures: [{ id: alice.id, login: 'alice' }] },
+  })
+  const result = await run(gh, 'pull_request_target', prEvent)
+
+  assert.equal(result.passed, false)
+  assert.equal(gh.state.statuses[0].state, 'failure')
+  assert.match(gh.state.statuses[0].description, /300 commits/)
+  assert.match(gh.state.comments[0].body, /more commits than GitHub lists/)
 })
 
 test('comments on plain issues are ignored', () => {
   const event = { action: 'created', issue: { number: 1 }, comment: { body: PHRASE } }
-  assert.equal(resolveTrigger('issue_comment', event, PHRASE), null)
+  assert.equal(resolveTrigger('issue_comment', event), null)
 })
 
 test('edited comments do not sign', () => {
   const event = { ...commentEvent(alice, PHRASE), action: 'edited' }
-  assert.equal(resolveTrigger('issue_comment', event, PHRASE), null)
+  assert.equal(resolveTrigger('issue_comment', event), null)
 })
 
-test('a concurrent write is retried against the latest file', async () => {
+test('a concurrent write is retried against the latest file, keeping the other signatures', async () => {
   const gh = fakeGitHub({ signatures: { version: 1, signatures: [] }, conflictsBeforeWrite: 2 })
   const location = { repository: 'Zipstack/cla-signatures', path: 'signatures.json', branch: 'main' }
   const data = await addSignature(gh, location, { id: 1, login: 'alice' })
-  assert.deepEqual(data.signatures.map((s) => s.id), [1])
+  assert.deepEqual(data.signatures.map((s) => s.id), [9001, 9000, 1])
+  assert.deepEqual(gh.state.file.data.signatures.map((s) => s.id), [9001, 9000, 1])
   assert.equal(gh.state.writes, 1)
+})
+
+test('two first signatures at once: the one that finds the file already created retries', async () => {
+  // Both runs saw no file; the other creates it first, so this write has no
+  // sha and GitHub answers 422.
+  const gh = fakeGitHub({ conflictsBeforeWrite: 1 })
+  const location = { repository: 'Zipstack/cla-signatures', path: 'signatures.json', branch: 'main' }
+  const data = await addSignature(gh, location, { id: 1, login: 'alice' })
+  assert.deepEqual(data.signatures.map((s) => s.id), [9000, 1])
+  assert.deepEqual(gh.state.file.data.signatures.map((s) => s.id), [9000, 1])
 })
 
 test('a signature recorded by a concurrent run is not written again', async () => {

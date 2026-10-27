@@ -34,12 +34,17 @@ function fakeGitHub({ pr, commits = [], comments = [], members = [], signatures,
     }
     if (method === 'PUT' && path.startsWith('/repos/Zipstack/cla-signatures/contents/')) {
       if (state.conflictsBeforeWrite > 0) {
+        // Another run signs first: the file gains a signature and a new sha,
+        // so this write's sha is stale.
         state.conflictsBeforeWrite--
-        throw new GitHubError(409, method, path, 'sha mismatch')
+        const concurrent = { id: 9000 + state.conflictsBeforeWrite, login: 'concurrent-signer' }
+        const data = state.file ? state.file.data : { version: 1, signatures: [] }
+        state.file = { data: { ...data, signatures: [...data.signatures, concurrent] }, sha: `sha-c${state.conflictsBeforeWrite}` }
       }
-      if ((state.file && body.sha !== state.file.sha) || (!state.file && body.sha)) {
-        throw new GitHubError(409, method, path, 'sha mismatch')
-      }
+      // GitHub answers 409 to a stale sha and 422 to a missing sha when the
+      // file already exists.
+      if (state.file && !body.sha) throw new GitHubError(422, method, path, '"sha" wasn\'t supplied')
+      if (state.file && body.sha !== state.file.sha) throw new GitHubError(409, method, path, 'sha mismatch')
       state.writes++
       state.file = {
         data: JSON.parse(Buffer.from(body.content, 'base64').toString('utf8')),
@@ -52,7 +57,12 @@ function fakeGitHub({ pr, commits = [], comments = [], members = [], signatures,
       throw new GitHubError(404, method, path, 'Not Found')
     }
     if (method === 'POST' && path.match(/\/issues\/\d+\/comments$/)) {
-      const comment = { id: nextId++, body: body.body, html_url: `https://github.com/comment/${nextId}` }
+      const comment = {
+        id: nextId++,
+        user: { id: 41898282, login: 'github-actions[bot]', type: 'Bot' },
+        body: body.body,
+        html_url: `https://github.com/comment/${nextId}`,
+      }
       state.comments.push(comment)
       return comment
     }

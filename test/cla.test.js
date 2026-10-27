@@ -3,9 +3,9 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const {
+  addPrAuthor,
   classifyAuthors,
   collectCommitAuthors,
-  isRecheckComment,
   isSignComment,
   matchesAllowlist,
   parseList,
@@ -22,10 +22,11 @@ test('sign comment matches regardless of case, spacing and a trailing full stop'
   assert.ok(!isSignComment('LGTM', PHRASE))
 })
 
-test('recheck comment', () => {
-  assert.ok(isRecheckComment('recheck'))
-  assert.ok(isRecheckComment(' Recheck! '))
-  assert.ok(!isRecheckComment('please recheck'))
+test('the PR author is added once to the people who must sign', () => {
+  const alice = { id: 1, login: 'alice', type: 'User' }
+  const bob = { id: 2, login: 'bob', type: 'User' }
+  assert.deepEqual(addPrAuthor([alice], bob), [alice, bob])
+  assert.deepEqual(addPrAuthor([alice, bob], bob), [alice, bob])
 })
 
 test('allowlist supports wildcards and escapes the rest of the pattern', () => {

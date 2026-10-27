@@ -6,11 +6,17 @@ A GitHub Action that enforces the Zipstack Contributor License Agreement (CLA) o
 
 On every pull request, and on every new PR comment:
 
-1. It lists the PR's commit authors.
-2. Each author passes if they have already signed, are a bot or on the allowlist, or are a member of the organization.
+1. It lists the PR's commit authors, plus the PR author.
+2. Each of them passes if they have already signed, are a bot or on the allowlist, or are a member of the organization.
 3. It sets a commit status (`license/cla` by default) on the PR head: `success` when everyone passes, `failure` otherwise. **Make this status the required check.**
 4. When someone still needs to sign, it posts one comment on the PR naming them and giving the exact phrase to post. It edits that same comment as things change, instead of adding new ones.
-5. When a commit author posts the phrase, it records their signature and re-runs the check. Commenting `recheck` re-runs the check without signing.
+5. When a commit author or the PR author has posted the phrase in a comment on the PR, it records their signature. Any comment re-runs the check; the PR comment suggests `recheck`.
+
+Every run reads all of the PR's comments for signatures, not just the comment that triggered it. The workflow's concurrency group keeps one pending run per PR and cancels the one already pending, so a sign comment's own run may never execute; the next run records it instead.
+
+The PR author is checked even without commits of their own. Commit authors are matched by the commit's email address, which the committer chooses, so without that a contributor could attribute every commit to an exempt or already-signed account.
+
+GitHub lists at most 250 commits of a pull request. A PR with more fails the check and asks to be split, rather than passing on a partial list.
 
 A signature covers every repository that uses the same signatures file, so a contributor signs once.
 
@@ -75,7 +81,21 @@ A commit whose author email isn't linked to any GitHub account has no GitHub use
 
 ## Commits made by coding agents
 
-Commits made with Claude Code are authored by `noreply@anthropic.com`, which GitHub links to the account `claude`. That account can't sign anything on the contributor's behalf, so commits from any login in `agent-logins` are attributed to the PR author, and the PR author signs for them. Org members stay exempt as usual. Don't put agent accounts on the `allowlist`: that would let anyone skip the CLA by having the agent make every commit.
+When Claude Code is itself the commit author (for example in a Claude Code cloud session), the commit is authored by `noreply@anthropic.com`, which GitHub links to the account `claude`. A local Claude Code session usually commits as the developer and names Claude only in a `Co-Authored-By` trailer, which the action does not read. The `claude` account can't sign anything on the contributor's behalf, so commits from any login in `agent-logins` are attributed to the PR author, and the PR author signs for them. Org members stay exempt as usual. Don't put agent accounts on the `allowlist`: that would let anyone skip the CLA by having the agent make every commit.
+
+## Known limitations
+
+Accepted for now; each one either fails closed or is a policy choice still open.
+
+- **A run that errors posts no status.** The required check then stays pending, and the error is only in the workflow run. API calls have no timeout or retry beyond the signatures write.
+- **A missing signatures file reads as "nobody has signed yet",** and an organization the token can't see reads as "not a member". A misconfigured repository, path, branch or organization therefore asks everyone to sign rather than failing with a configuration error.
+- **A sign comment that is not accepted gets no reply on the PR** (for example from someone who is neither a commit author nor the PR author). The reason is only in the workflow log.
+- **A signature is not tied to a CLA version.** Any signature in the file counts for every repository and every `cla-document-url`. Records from the importer carry `cla_version`; records from the action don't.
+- **The PR comment is found by its marker alone**, whoever wrote it, and an unlinked commit's author name is shown as the committer wrote it.
+- **The signatures file must stay under 1 MB** (a few thousand signatures): above that the contents API stops returning the file and every run fails.
+- **`exempt-org-members` is off only for the exact value `false`.**
+- **The status description counts unlinked commits** as committers, one per commit.
+- **The file's `version` field is not checked** when it is read.
 
 ## Migrating from cla-assistant.io
 
