@@ -57,7 +57,8 @@ function commentEvent(user, body) {
 let nextCommentId = 1
 function postComment(gh, user, body, { editedAt } = {}) {
   const id = nextCommentId++
-  const createdAt = new Date(Date.UTC(2026, 9, 1, 0, id)).toISOString()
+  // GitHub's timestamps have no milliseconds.
+  const createdAt = new Date(Date.UTC(2026, 9, 1, 0, id)).toISOString().replace('.000Z', 'Z')
   gh.state.comments.push({
     id,
     user,
@@ -178,7 +179,11 @@ test('a sign comment whose own run was cancelled is recorded by the next run', a
   assert.equal(result.passed, true)
   assert.deepEqual(gh.state.file.data.signatures.map((s) => s.id), [alice.id])
   assert.equal(gh.state.file.data.signatures[0].comment_url, signed.html_url)
-  assert.equal(gh.state.file.data.signatures[0].signed_at, signed.created_at, 'signed when the comment was posted')
+  assert.equal(
+    gh.state.file.data.signatures[0].signed_at,
+    new Date(signed.created_at).toISOString(),
+    'signed when the comment was posted',
+  )
   assert.equal(gh.state.statuses.at(-1).state, 'success')
 })
 
@@ -230,6 +235,13 @@ test('edited comments do not sign', async () => {
   const result = await comment(gh, bob, 'LGTM')
   assert.equal(result.passed, false)
   assert.equal(gh.state.file, null, 'nothing written')
+
+  // Posting the phrase again as a new comment signs.
+  const fresh = postComment(gh, alice, PHRASE)
+  const retry = await comment(gh, bob, 'thanks')
+  assert.equal(retry.passed, true)
+  assert.deepEqual(gh.state.file.data.signatures.map((s) => s.id), [alice.id])
+  assert.equal(gh.state.file.data.signatures[0].signed_at, new Date(fresh.created_at).toISOString())
 })
 
 test('a PR whose commit count matches the listed commits is not treated as truncated', async () => {

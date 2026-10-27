@@ -85,15 +85,15 @@ When Claude Code is itself the commit author (for example in a Claude Code cloud
 
 ## Known limitations
 
-- **A run that errors posts no status.** The required check then stays pending, and the error is only in the workflow run. API calls have no timeout or retry; only a signatures write that loses a race with another write is retried.
+- **A run that errors posts no status.** The required check then stays pending, and the error is only in the workflow run. API calls have no timeout or retry; only the signatures write is retried, and only on a 409 or 422 response, up to 5 attempts.
 - **A missing signatures file reads as "nobody has signed yet",** and an organization the token can't see reads as "not a member". A misconfigured repository, path, branch or organization therefore asks everyone to sign rather than failing with a configuration error.
 - **A sign comment that is not accepted gets no reply on the PR** (for example from someone who is neither a commit author nor the PR author). The reason is only in the workflow log.
 - **A signature is not tied to a CLA version.** Any signature in the file counts for every repository and every `cla-document-url`. Records from the importer carry `cla_version`; records from the action don't.
 - **The PR comment is found by its marker alone**, whoever wrote it, and an unlinked commit's author name is shown as the committer wrote it.
 - **The signatures file must stay under 1 MB** (a few thousand signatures): above that the contents API stops returning the file and every run fails.
 - **`exempt-org-members` is off only for the exact value `false`.** Any other value, including `False` or `no`, leaves org members exempt.
-- **A PR opened by an account in `agent-logins` can't pass**, because that account would have to sign as the PR author and can't. Open the PR from a person's account, or from a GitHub App (`[bot]` accounts are exempt).
-- **An edited comment never signs**, even when its author edited it into the phrase; they post the phrase again as a new comment.
+- **A PR opened by an account in `agent-logins` fails the check** unless that account itself signs, because it counts as the PR author. The action does not stop an agent account from signing. Open the PR from a person's account, or from a GitHub App (`[bot]` accounts are exempt).
+- **An edited or hidden comment never signs**, even when its author edited it into the phrase or a maintainer only hid it; the person posts the phrase again as a new comment. The workflow log says which comment was ignored.
 - **The status description counts unlinked commits** as committers, one per commit.
 - **The file's `version` field is not checked** when it is read.
 
